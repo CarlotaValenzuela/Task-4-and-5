@@ -1,27 +1,15 @@
 ###Set-up the enviornment 
-# Create the directories
-mkdir -p ATAC-seq/annotation ATAC-seq/data ATAC-seq/analyses
-
-# Clone the repository
-git clone https://github.com/bborsari/epigenomics_uvic
-cd epigenomics_uvic
-
 # Run the Docker
 sudo docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
 cd ATAC-seq
 
+# Create the directories
+mkdir -p ATAC-seq/annotation ATAC-seq/data ATAC-seq/analyses
+
 
 ###Download ATAC-seq experiments
-# Exit Docker and download metadata
-exit
-cd ATAC-seq
-
 # Download metadata
 ../bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_slims=DNA+accessibility&assay_title=ATAC-seq&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&type=Experiment"
-
-# Enter Docker environment
-sudo docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
-cd ATAC-seq
 
 # Identify relevant files
 awk -F"\t" '
@@ -48,9 +36,6 @@ join -1 1 -2 1 \
   <(sort -k1,1 analyses/bigBed.peaks.ids.txt) \
   <(awk -F"\t" '{print $1,$46}' metadata.tsv | sort -k1,1) | 
 awk '{if ($2 != $3) print "Mismatch for", $1}'
-
-"Downloaded 4 bigBed files (2 tissues × 2 replicates). All MD5 checksums matched ENCODE records."
-
 
 
 ###Intersection analysis
@@ -92,10 +77,12 @@ cut -f1,2 analyses/bigBed.peaks.ids.txt | while read id tissue; do
   wc -l analyses/peak.analysis/${tissue}_intergenic_peaks.bed | awk '{print $1 " intergenic peaks in " $2}'
 done
 
-"Stomach:
+'''
+Stomach:
 44,749 peaks in promoters
 34,537 intergenic peaks
 
 Sigmoid colon:
 47,871 peaks in promoters
-37,035 intergenic peaks"
+37,035 intergenic peaks
+'''
