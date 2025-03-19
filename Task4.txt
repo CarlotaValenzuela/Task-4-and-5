@@ -1,0 +1,101 @@
+###Set-up the enviornment 
+# Create the directories
+mkdir -p ATAC-seq/annotation ATAC-seq/data ATAC-seq/analyses
+
+# Clone the repository
+git clone https://github.com/bborsari/epigenomics_uvic
+cd epigenomics_uvic
+
+# Run the Docker
+sudo docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
+cd ATAC-seq
+
+
+###Download ATAC-seq experiments
+# Exit Docker and download metadata
+exit
+cd ATAC-seq
+
+# Download metadata
+../bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_slims=DNA+accessibility&assay_title=ATAC-seq&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&type=Experiment"
+
+# Enter Docker environment
+sudo docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
+cd ATAC-seq
+
+# Identify relevant files
+awk -F"\t" '
+$2 == "bigBed_narrowPeak" && 
+$5 == "pseudoreplicated peaks" && 
+$6 == "GRCh38" && 
+$8 ~ /(stomach|sigmoid_colon)/ {
+  print $1, $8
+}' metadata.tsv | sort -k2,2 -k1,1r | uniq > analyses/bigBed.peaks.ids.txt
+
+# Download bigBed files
+mkdir -p data/bigBed.narrowPeak.files
+cut -f1 analyses/bigBed.peaks.ids.txt | while read id; do
+  wget -P data/bigBed.narrowPeak.files "https://www.encodeproject.org/files/$id/@@download/$id.bigBed"
+done
+
+# Verify checksums
+cut -f1 analyses/bigBed.peaks.ids.txt | while read id; do
+  echo "$id $(md5sum data/bigBed.narrowPeak.files/$id.bigBed | cut -d' ' -f1)"
+done > data/bigBed.narrowPeak.files/md5sum.observed.txt
+
+# Compare with ENCODE-provided checksums
+join -1 1 -2 1 \
+  <(sort -k1,1 analyses/bigBed.peaks.ids.txt) \
+  <(awk -F"\t" '{print $1,$46}' metadata.tsv | sort -k1,1) | 
+awk '{if ($2 != $3) print "Mismatch for", $1}'
+
+"Downloaded 4 bigBed files (2 tissues × 2 replicates). All MD5 checksums matched ENCODE records."
+
+
+
+###Intersection analysis
+# Convert bigBed to BED
+mkdir -p data/bed.narrowPeak.files
+cut -f1 analyses/bigBed.peaks.ids.txt | while read id; do
+  bigBedToBed data/bigBed.narrowPeak.files/$id.bigBed data/bed.narrowPeak.files/$id.bed
+done
+
+# Get promoter regions 
+wget -P annotation https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/gencodeV28.txt.gz
+gunzip annotation/gencodeV28.txt.gz
+awk -F"\t" '$3 == "transcript" && $9 ~ /protein_coding/ {
+  split($9, a, /";/)
+  gene_id = substr(a[1], 10)
+  if ($4-2000 < 0) start = 0; else start = $4-2000
+  print $1"\t"start"\t"($4+2000)"\t"gene_id
+}' annotation/gencodeV28.txt | sort -k1,1 -k2,2n > annotation/promoters.bed
+
+# Intersect with promoters
+mkdir -p analyses/peak.analysis
+cut -f1,2 analyses/bigBed.peaks.ids.txt | while read id tissue; do
+  bedtools intersect -a data/bed.narrowPeak.files/$id.bed \
+    -b annotation/promoters.bed -u > analyses/peak.analysis/${tissue}_promoter_peaks.bed
+  wc -l analyses/peak.analysis/${tissue}_promoter_peaks.bed | awk '{print $1 " promoter peaks in " $2}'
+done
+
+# Create gene body BED
+awk -F"\t" '$3 == "gene" && $9 ~ /protein_coding/ {
+  split($9, a, /";/)
+  gene_id = substr(a[1], 10)
+  print $1"\t"$4-1"\t"$5"\t"gene_id
+}' annotation/gencodeV28.txt > annotation/gene_bodies.bed
+
+# Find peaks
+cut -f1,2 analyses/bigBed.peaks.ids.txt | while read id tissue; do
+  bedtools intersect -a data/bed.narrowPeak.files/$id.bed \
+    -b annotation/gene_bodies.bed -v > analyses/peak.analysis/${tissue}_intergenic_peaks.bed
+  wc -l analyses/peak.analysis/${tissue}_intergenic_peaks.bed | awk '{print $1 " intergenic peaks in " $2}'
+done
+
+"Stomach:
+44,749 peaks in promoters
+34,537 intergenic peaks
+
+Sigmoid colon:
+47,871 peaks in promoters
+37,035 intergenic peaks"
