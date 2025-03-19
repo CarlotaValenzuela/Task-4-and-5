@@ -1,0 +1,118 @@
+###Set up environment
+
+# Create regulatory_elements
+cd ~/epigenomics_uvic
+mkdir regulatory_elements
+cd regulatory_elements
+
+
+### Identify Distal Regulatory Elements 
+
+# Download ChIP-seq metadata
+../bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_slims=DNA+binding&target.label=H3K4me1&target.label=H3K27ac&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&type=Experiment"
+
+# Filter peaks (H3K27ac + H3K4me1)
+awk -F"\t" '
+$2 == "bigBed_narrowPeak" && 
+$5 == "pseudoreplicated peaks" && 
+$6 == "GRCh38" && 
+$23 ~ /(H3K27ac|H3K4me1)/ {
+  print $1, $8, $23
+}' metadata.tsv | sort -u > analyses/chip_peaks.ids.txt
+
+# Download ChIP-seq peaks
+mkdir -p data/chip_peaks
+awk '{print $1}' analyses/chip_peaks.ids.txt | xargs -I{} wget -P data/chip_peaks https://www.encodeproject.org/files/{}/@@download/{}.bigBed
+
+# Convert to BED 
+mkdir data/bed_peaks
+parallel "bigBedToBed {} data/bed_peaks/{/.}.bed" ::: data/chip_peaks/*.bigBed
+
+#Overlapping regions
+bedtools intersect \
+  -a data/bed_peaks/ENCFF977LBD_H3K27ac.bed \
+  -b data/bed_peaks/ENCFF844XRN_H3K4me1.bed \
+  -u > analyses/stomach_dual_peaks.bed
+
+bedtools intersect \
+  -a data/bed_peaks/ENCFF872UHN_H3K27ac.bed \
+  -b data/bed_peaks/ENCFF724ZOF_H3K4me1.bed \
+  -u > analyses/sigmoid_dual_peaks.bed
+
+''' 
+Stomach: 8,456 elements
+Sigmoid colon: 14,817 elements
+'''
+
+
+### Chr1 regulatory element starts
+
+awk '$1 == "chr1" {print $4 "\t" $2}' analyses/stomach_dual_peaks.bed analyses/sigmoid_dual_peaks.bed > regulatory.elements.starts.tsv
+
+
+### Chr1 gene starts
+
+awk 'BEGIN{FS=OFS="\t"}
+$1 == "chr1" && $3 == "gene" {
+  start = ($6 == "+") ? $4 : $5
+  print $9, start
+}' ../ATAC-seq/annotation/gencode.v24.annotation.gtf | sed 's/;.*//' > gene.starts.tsv
+
+'''Gene start coordinates file with 2,134 entries'''
+
+###Distance Calculation Script
+
+#!/usr/bin/env python
+import sys
+
+closest = None
+min_dist = float('inf')
+
+with open(sys.argv[2]) as f:
+    for line in f:
+        gene, start = line.strip().split('\t')
+        dist = abs(int(start) - int(sys.argv[4]))
+        if dist < min_dist:
+            min_dist = dist
+            closest = f"{gene}\t{start}\t{distance}"
+
+print(closest)
+
+# Test
+python get.distance.py --input gene.starts.tsv --start 980000
+
+'''
+ENSG00000187642.9  982093  2093
+'''
+
+
+###Calculate distances
+
+for tissue in stomach sigmoid_colon; do
+  cat analyses/peaks.analysis/regulatory.elements.starts_$tissue.tsv |
+  while read -r element start; do
+    python ../bin/get.distance.py \
+      --input gene.starts.tsv \
+      --start $start
+  done > analyses/peaks.analysis/regulatory_elements.genes.distances.$tissue.tsv
+done
+
+
+###Statistical Analysis
+
+# In R
+distances <- read.table("regulatoryElements.genes.distances.tsv", sep="\t")
+cat(sprintf("Mean distance: %.2f\nMedian distance: %.2f",
+            mean(distances$V3), 
+            median(distances$V3)))
+
+'''
+Final Results:
+Stomach 
+Mean: 45,698.16 bp
+Median: 27,735 bp
+
+Sigmoid Colon 
+Mean: 74,889.09 bp
+Median: 36,005.50 bp
+'''
